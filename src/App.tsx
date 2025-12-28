@@ -4,6 +4,7 @@ import InputModule from './components/InputModule';
 import VectorScope from './components/VectorScope';
 import AgentCard from './components/AgentCard';
 import TelemetryPanel from './components/TelemetryPanel';
+import PredictionPanel from './components/PredictionPanel';
 import OracleGate from './components/OracleGate';
 import type { AnalysisResult } from './types';
 import { AnalysisState } from './types';
@@ -118,13 +119,23 @@ const App: React.FC = () => {
           />
         </div>
 
-        {/* Full width - Telemetry Panel */}
+        {/* Full width - 72-Hour Prediction */}
         <div className="md:col-span-12 order-4">
+          <PredictionPanel
+            prediction={data?.prediction || null}
+            currentPrice={data?.marketData.price || 0}
+            ticker={activeTicker}
+            isActive={isComplete}
+          />
+        </div>
+
+        {/* Full width - Telemetry Panel */}
+        <div className="md:col-span-12 order-5">
           <TelemetryPanel data={data} />
         </div>
 
         {/* Full width - Oracle Gate */}
-        <div className="md:col-span-12 order-5">
+        <div className="md:col-span-12 order-6">
           <OracleGate
             isLocked={parseFloat(coherence) <= 0.8}
             contextData={contextSummary}

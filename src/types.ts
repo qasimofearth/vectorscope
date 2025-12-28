@@ -78,6 +78,23 @@ export interface CaseAnalysis {
   Confidence: number;      // AI confidence in this analysis
 }
 
+// 72-Hour Prediction
+export interface Prediction72H {
+  direction: 'UP' | 'DOWN' | 'SIDEWAYS';
+  confidence: number;           // 0-100
+  predictedChange: number;      // Percentage change expected
+  priceTarget: number;          // Target price in 72h
+  supportLevel: number;         // Key support
+  resistanceLevel: number;      // Key resistance
+  reasoning: string;            // AI explanation
+  keyFactors: string[];         // Main factors driving prediction
+  riskFactors: string[];        // What could invalidate this
+  timeframe: {
+    start: number;              // Timestamp
+    end: number;                // 72h from now
+  };
+}
+
 // Complete analysis result
 export interface AnalysisResult {
   ticker: string;
@@ -96,6 +113,9 @@ export interface AnalysisResult {
   // Analysis
   BullCase: CaseAnalysis;
   BearCase: CaseAnalysis;
+
+  // 72-Hour Prediction
+  prediction: Prediction72H;
 
   // News & Sentiment
   news: NewsItem[];
