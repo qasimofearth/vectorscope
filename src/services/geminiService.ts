@@ -13,8 +13,8 @@ import {
   calculateVerdict
 } from './marketService';
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+const CLAUDE_API_KEY = import.meta.env.VITE_CLAUDE_API_KEY || '';
+const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 
 /**
  * Fetch complete market context for a ticker
@@ -102,7 +102,7 @@ export async function performAdversarialAnalysis(
   let bullCase: CaseAnalysis;
   let bearCase: CaseAnalysis;
 
-  if (GEMINI_API_KEY) {
+  if (CLAUDE_API_KEY) {
     const aiAnalysis = await generateAIAnalysis(ticker, context, sentimentVector, priceVector);
     bullCase = aiAnalysis.bullCase;
     bearCase = aiAnalysis.bearCase;
@@ -142,7 +142,7 @@ export async function performAdversarialAnalysis(
 }
 
 /**
- * Generate analysis using Gemini AI
+ * Generate analysis using Claude AI
  */
 async function generateAIAnalysis(
   ticker: string,
@@ -153,26 +153,33 @@ async function generateAIAnalysis(
   const prompt = buildAnalysisPrompt(ticker, context);
 
   try {
-    const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
+    const response = await fetch(CLAUDE_API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': CLAUDE_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.7,
-          topK: 40,
-          topP: 0.95,
-          maxOutputTokens: 2048
-        }
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: prompt
+          }
+        ]
       })
     });
 
     if (!response.ok) {
-      throw new Error('Gemini API request failed');
+      const errorText = await response.text();
+      throw new Error(`Claude API failed: ${errorText}`);
     }
 
     const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const text = data.content?.[0]?.text || '';
 
     return parseAIResponse(text, context, sentimentVector, priceVector);
   } catch (error) {
