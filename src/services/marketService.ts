@@ -14,20 +14,32 @@ const ALPHA_VANTAGE_KEY = import.meta.env.VITE_ALPHA_VANTAGE_KEY || '';
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 const ALPHA_VANTAGE_BASE = 'https://www.alphavantage.co/query';
 
-// Real market prices (Dec 2024) - used as baseline for realistic simulation
-const STOCK_PRICES: Record<string, number> = {
-  'AAPL': 254, 'GOOGL': 193, 'MSFT': 437, 'AMZN': 227, 'TSLA': 462,
-  'NVDA': 138, 'META': 604, 'NFLX': 925, 'AMD': 119, 'INTC': 20,
-  'SPY': 600, 'QQQ': 531, 'DIS': 112, 'PYPL': 89, 'COIN': 298,
-  'BA': 179, 'JPM': 244, 'V': 318, 'WMT': 91, 'JNJ': 145,
-  'CRM': 340, 'ORCL': 190, 'ADBE': 450, 'CSCO': 58, 'PEP': 152
-};
+// Yahoo Finance proxy (CORS-friendly)
+const YAHOO_PROXY = 'https://corsproxy.io/?';
+const YAHOO_CHART_URL = 'https://query1.finance.yahoo.com/v8/finance/chart/';
+const YAHOO_QUOTE_URL = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=';
 
 /**
- * Fetch real-time quote - tries Finnhub, falls back to realistic simulation
+ * Fetch real-time quote from Yahoo Finance
  */
 export async function fetchRealTimeQuote(symbol: string): Promise<MarketData> {
   const upperSymbol = symbol.toUpperCase();
+
+  // Try Yahoo Finance first (most accurate)
+  try {
+    const data = await fetchYahooQuote(upperSymbol);
+    if (data) return data;
+  } catch (e) {
+    console.warn('Yahoo Finance failed:', e);
+  }
+
+  // Try Yahoo Finance chart API as backup
+  try {
+    const data = await fetchYahooChart(upperSymbol);
+    if (data) return data;
+  } catch (e) {
+    console.warn('Yahoo Chart failed:', e);
+  }
 
   // Try Finnhub if API key is configured
   if (FINNHUB_API_KEY) {
@@ -52,29 +64,73 @@ export async function fetchRealTimeQuote(symbol: string): Promise<MarketData> {
         }
       }
     } catch (e) {
-      console.warn('Finnhub failed, using simulation:', e);
+      console.warn('Finnhub failed:', e);
     }
   }
 
-  // Generate realistic simulated data
-  const basePrice = STOCK_PRICES[upperSymbol] || 100 + Math.random() * 150;
-  const changePercent = (Math.random() - 0.5) * 4; // -2% to +2%
-  const price = basePrice * (1 + (Math.random() - 0.5) * 0.02);
-  const change = price * (changePercent / 100);
-  const volatility = 0.015;
-  const high = price * (1 + volatility);
-  const low = price * (1 - volatility);
+  throw new Error(`Unable to fetch quote for ${upperSymbol}. Please check the symbol and try again.`);
+}
+
+/**
+ * Fetch quote from Yahoo Finance quote API
+ */
+async function fetchYahooQuote(symbol: string): Promise<MarketData | null> {
+  const url = `${YAHOO_PROXY}${encodeURIComponent(YAHOO_QUOTE_URL + symbol)}`;
+
+  const response = await fetch(url);
+  if (!response.ok) return null;
+
+  const data = await response.json();
+  const quote = data?.quoteResponse?.result?.[0];
+
+  if (!quote || !quote.regularMarketPrice) return null;
 
   return {
-    symbol: upperSymbol,
-    price: parseFloat(price.toFixed(2)),
-    change: parseFloat(change.toFixed(2)),
-    changePercent: parseFloat(changePercent.toFixed(2)),
-    high: parseFloat(high.toFixed(2)),
-    low: parseFloat(low.toFixed(2)),
-    open: parseFloat((low + Math.random() * (high - low)).toFixed(2)),
-    previousClose: parseFloat((price - change).toFixed(2)),
-    volume: Math.floor(Math.random() * 50000000) + 5000000,
+    symbol: symbol,
+    price: quote.regularMarketPrice,
+    change: quote.regularMarketChange || 0,
+    changePercent: quote.regularMarketChangePercent || 0,
+    high: quote.regularMarketDayHigh || quote.regularMarketPrice,
+    low: quote.regularMarketDayLow || quote.regularMarketPrice,
+    open: quote.regularMarketOpen || quote.regularMarketPrice,
+    previousClose: quote.regularMarketPreviousClose || quote.regularMarketPrice,
+    volume: quote.regularMarketVolume || 0,
+    marketCap: quote.marketCap,
+    timestamp: Date.now()
+  };
+}
+
+/**
+ * Fetch quote from Yahoo Finance chart API (backup)
+ */
+async function fetchYahooChart(symbol: string): Promise<MarketData | null> {
+  const url = `${YAHOO_PROXY}${encodeURIComponent(YAHOO_CHART_URL + symbol + '?interval=1d&range=1d')}`;
+
+  const response = await fetch(url);
+  if (!response.ok) return null;
+
+  const data = await response.json();
+  const result = data?.chart?.result?.[0];
+
+  if (!result) return null;
+
+  const meta = result.meta;
+  const quote = result.indicators?.quote?.[0];
+
+  if (!meta?.regularMarketPrice) return null;
+
+  return {
+    symbol: symbol,
+    price: meta.regularMarketPrice,
+    change: meta.regularMarketPrice - (meta.previousClose || meta.regularMarketPrice),
+    changePercent: meta.previousClose
+      ? ((meta.regularMarketPrice - meta.previousClose) / meta.previousClose) * 100
+      : 0,
+    high: quote?.high?.[0] || meta.regularMarketDayHigh || meta.regularMarketPrice,
+    low: quote?.low?.[0] || meta.regularMarketDayLow || meta.regularMarketPrice,
+    open: quote?.open?.[0] || meta.regularMarketOpen || meta.regularMarketPrice,
+    previousClose: meta.previousClose || meta.regularMarketPrice,
+    volume: quote?.volume?.[0] || meta.regularMarketVolume || 0,
     timestamp: Date.now()
   };
 }
@@ -111,48 +167,89 @@ export async function fetchNews(symbol: string): Promise<NewsItem[]> {
 }
 
 /**
- * Fetch historical daily data from Alpha Vantage
+ * Fetch historical daily data from Yahoo Finance
  */
 export async function fetchHistoricalData(symbol: string): Promise<HistoricalData[]> {
-  const url = `${ALPHA_VANTAGE_BASE}?function=TIME_SERIES_DAILY&symbol=${symbol.toUpperCase()}&outputsize=compact&apikey=${ALPHA_VANTAGE_KEY}`;
+  const upperSymbol = symbol.toUpperCase();
 
+  // Try Yahoo Finance first
   try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error('Failed to fetch historical data');
-    }
-
-    const data = await response.json();
-
-    // Check for API limit message
-    if (data.Note || data['Error Message']) {
-      console.warn('Alpha Vantage API limit reached, using fallback data');
-      return generateFallbackHistoricalData(symbol);
-    }
-
-    const timeSeries = data['Time Series (Daily)'];
-    if (!timeSeries) {
-      return generateFallbackHistoricalData(symbol);
-    }
-
-    const historical: HistoricalData[] = Object.entries(timeSeries)
-      .slice(0, 100) // Last 100 days
-      .map(([date, values]: [string, unknown]) => {
-        const v = values as Record<string, string>;
-        return {
-          date,
-          open: parseFloat(v['1. open']),
-          high: parseFloat(v['2. high']),
-          low: parseFloat(v['3. low']),
-          close: parseFloat(v['4. close']),
-          volume: parseFloat(v['5. volume'])
-        };
-      });
-
-    return historical;
-  } catch {
-    return generateFallbackHistoricalData(symbol);
+    const data = await fetchYahooHistorical(upperSymbol);
+    if (data && data.length > 0) return data;
+  } catch (e) {
+    console.warn('Yahoo historical failed:', e);
   }
+
+  // Try Alpha Vantage as backup
+  if (ALPHA_VANTAGE_KEY) {
+    try {
+      const url = `${ALPHA_VANTAGE_BASE}?function=TIME_SERIES_DAILY&symbol=${upperSymbol}&outputsize=compact&apikey=${ALPHA_VANTAGE_KEY}`;
+      const response = await fetch(url);
+
+      if (response.ok) {
+        const data = await response.json();
+        const timeSeries = data['Time Series (Daily)'];
+
+        if (timeSeries && !data.Note) {
+          const historical: HistoricalData[] = Object.entries(timeSeries)
+            .slice(0, 100)
+            .map(([date, values]: [string, unknown]) => {
+              const v = values as Record<string, string>;
+              return {
+                date,
+                open: parseFloat(v['1. open']),
+                high: parseFloat(v['2. high']),
+                low: parseFloat(v['3. low']),
+                close: parseFloat(v['4. close']),
+                volume: parseFloat(v['5. volume'])
+              };
+            });
+          return historical;
+        }
+      }
+    } catch (e) {
+      console.warn('Alpha Vantage failed:', e);
+    }
+  }
+
+  // Generate fallback based on current price
+  return generateFallbackHistoricalData(upperSymbol);
+}
+
+/**
+ * Fetch historical data from Yahoo Finance
+ */
+async function fetchYahooHistorical(symbol: string): Promise<HistoricalData[]> {
+  // Get 100 days of data
+  const url = `${YAHOO_PROXY}${encodeURIComponent(YAHOO_CHART_URL + symbol + '?interval=1d&range=6mo')}`;
+
+  const response = await fetch(url);
+  if (!response.ok) return [];
+
+  const data = await response.json();
+  const result = data?.chart?.result?.[0];
+
+  if (!result) return [];
+
+  const timestamps = result.timestamp || [];
+  const quotes = result.indicators?.quote?.[0] || {};
+
+  const historical: HistoricalData[] = [];
+
+  for (let i = timestamps.length - 1; i >= 0 && historical.length < 100; i--) {
+    if (quotes.close?.[i] != null) {
+      historical.push({
+        date: new Date(timestamps[i] * 1000).toISOString().split('T')[0],
+        open: quotes.open?.[i] || quotes.close[i],
+        high: quotes.high?.[i] || quotes.close[i],
+        low: quotes.low?.[i] || quotes.close[i],
+        close: quotes.close[i],
+        volume: quotes.volume?.[i] || 0
+      });
+    }
+  }
+
+  return historical;
 }
 
 /**
@@ -191,11 +288,13 @@ function generateFallbackHistoricalData(symbol: string): HistoricalData[] {
 }
 
 function getBasePrice(symbol: string): number {
-  // Known stock prices for demo
+  // Updated stock prices (Dec 2024) - only used as last resort fallback
   const prices: Record<string, number> = {
-    'AAPL': 175, 'GOOGL': 140, 'MSFT': 380, 'AMZN': 185,
-    'TSLA': 250, 'NVDA': 480, 'META': 500, 'NFLX': 480,
-    'AMD': 140, 'INTC': 45, 'SPY': 475, 'QQQ': 400
+    'AAPL': 254, 'GOOGL': 193, 'MSFT': 437, 'AMZN': 227, 'TSLA': 455,
+    'NVDA': 137, 'META': 604, 'NFLX': 925, 'AMD': 119, 'INTC': 20,
+    'SPY': 600, 'QQQ': 531, 'DIS': 112, 'PYPL': 89, 'COIN': 330,
+    'BA': 178, 'JPM': 243, 'V': 318, 'WMT': 91, 'JNJ': 145,
+    'BTC-USD': 94000, 'ETH-USD': 3400, 'SOL-USD': 190, 'XRP-USD': 2.2
   };
   return prices[symbol.toUpperCase()] || 100 + Math.random() * 200;
 }
