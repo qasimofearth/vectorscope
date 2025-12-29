@@ -5,6 +5,7 @@ import VectorScope from './components/VectorScope';
 import AgentCard from './components/AgentCard';
 import TelemetryPanel from './components/TelemetryPanel';
 import PredictionPanel from './components/PredictionPanel';
+import SignalDashboard from './components/SignalDashboard';
 import OracleGate from './components/OracleGate';
 import type { AnalysisResult } from './types';
 import { AnalysisState } from './types';
@@ -129,13 +130,24 @@ const App: React.FC = () => {
           />
         </div>
 
-        {/* Full width - Telemetry Panel */}
+        {/* Full width - Multi-Signal Dashboard */}
         <div className="md:col-span-12 order-5">
+          <SignalDashboard
+            multiSignal={data?.multiSignal}
+            optionsFlow={data?.optionsFlow}
+            eventsCalendar={data?.eventsCalendar}
+            socialSentiment={data?.socialSentiment}
+            isActive={isComplete}
+          />
+        </div>
+
+        {/* Full width - Telemetry Panel */}
+        <div className="md:col-span-12 order-6">
           <TelemetryPanel data={data} />
         </div>
 
         {/* Full width - Oracle Gate */}
-        <div className="md:col-span-12 order-6">
+        <div className="md:col-span-12 order-7">
           <OracleGate
             isLocked={parseFloat(coherence) <= 0.8}
             contextData={contextSummary}

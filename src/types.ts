@@ -129,6 +129,12 @@ export interface AnalysisResult {
   // Oracle verdict
   verdict: 'STRONG_BUY' | 'BUY' | 'HOLD' | 'SELL' | 'STRONG_SELL';
   confidenceLevel: number;
+
+  // Multi-signal analysis
+  optionsFlow?: OptionsFlow;
+  eventsCalendar?: EventsCalendar;
+  socialSentiment?: SocialSentiment;
+  multiSignal?: MultiSignalAnalysis;
 }
 
 // Market context for AI analysis
@@ -145,6 +151,10 @@ export interface MarketContext {
   historicalPrices: HistoricalData[];
   marketTrend: 'bullish' | 'bearish' | 'sideways';
   volatility: 'low' | 'medium' | 'high' | 'extreme';
+  // Enhanced signals
+  optionsFlow?: OptionsFlow;
+  eventsCalendar?: EventsCalendar;
+  socialSentiment?: SocialSentiment;
 }
 
 // API response types
@@ -202,6 +212,82 @@ export interface FinnhubNews {
   source: string;
   summary: string;
   url: string;
+}
+
+// Options Flow Data
+export interface OptionsFlow {
+  putCallRatio: number;        // < 0.7 bullish, > 1.3 bearish
+  totalCallVolume: number;
+  totalPutVolume: number;
+  unusualActivity: UnusualOption[];
+  impliedVolatility: number;   // Current IV
+  ivPercentile: number;        // IV percentile (0-100)
+  sentiment: 'bullish' | 'bearish' | 'neutral';
+}
+
+export interface UnusualOption {
+  type: 'CALL' | 'PUT';
+  strike: number;
+  expiry: string;
+  volume: number;
+  openInterest: number;
+  premium: number;             // Total premium in $
+  sentiment: 'bullish' | 'bearish';
+}
+
+// Earnings & Events Calendar
+export interface EarningsEvent {
+  date: string;
+  type: 'earnings' | 'dividend' | 'split' | 'conference' | 'fda' | 'other';
+  title: string;
+  estimate?: number;           // EPS estimate for earnings
+  actual?: number;             // Actual EPS if reported
+  surprise?: number;           // Beat/miss percentage
+  impact: 'high' | 'medium' | 'low';
+}
+
+export interface EventsCalendar {
+  upcomingEarnings: EarningsEvent | null;
+  daysToEarnings: number | null;
+  recentEarnings: EarningsEvent | null;
+  upcomingEvents: EarningsEvent[];
+  hasNearTermCatalyst: boolean;
+}
+
+// Social Sentiment
+export interface SocialSentiment {
+  overallScore: number;        // -1 to 1
+  trendingScore: number;       // How much it's being discussed (0-100)
+  bullishPosts: number;
+  bearishPosts: number;
+  totalMentions: number;
+  sentimentChange24h: number;  // Change in sentiment vs 24h ago
+  topKeywords: string[];
+  platforms: {
+    reddit: number;            // -1 to 1
+    twitter: number;           // -1 to 1
+    stocktwits: number;        // -1 to 1
+  };
+}
+
+// Multi-Signal Prediction Score
+export interface SignalScore {
+  name: string;
+  score: number;               // -100 to 100 (negative = bearish, positive = bullish)
+  weight: number;              // 0 to 1
+  confidence: number;          // 0 to 100
+  signal: 'strong_buy' | 'buy' | 'neutral' | 'sell' | 'strong_sell';
+}
+
+export interface MultiSignalAnalysis {
+  technicalScore: SignalScore;
+  optionsScore: SignalScore;
+  sentimentScore: SignalScore;
+  socialScore: SignalScore;
+  eventScore: SignalScore;
+  combinedScore: number;       // Weighted average
+  combinedConfidence: number;
+  signalStrength: 'strong' | 'moderate' | 'weak';
 }
 
 // Component prop types

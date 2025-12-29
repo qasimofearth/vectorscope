@@ -3,7 +3,9 @@ import type {
   AnalysisResult,
   CaseAnalysis,
   MarketData,
-  Prediction72H
+  Prediction72H,
+  MultiSignalAnalysis,
+  SignalScore
 } from '../types';
 import {
   fetchRealTimeQuote,
@@ -11,7 +13,10 @@ import {
   fetchNews,
   calculateTechnicalIndicators,
   calculateVectors,
-  calculateVerdict
+  calculateVerdict,
+  fetchOptionsFlow,
+  fetchEventsCalendar,
+  fetchSocialSentiment
 } from './marketService';
 
 const CLAUDE_API_KEY = import.meta.env.VITE_CLAUDE_API_KEY || '';
@@ -21,7 +26,7 @@ const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
  * Fetch complete market context for a ticker
  */
 export async function fetchMarketContext(ticker: string): Promise<MarketContext> {
-  // Fetch all data in parallel
+  // Fetch all data in parallel - core data first
   const [quote, historical, news] = await Promise.all([
     fetchRealTimeQuote(ticker),
     fetchHistoricalData(ticker),
@@ -52,6 +57,13 @@ export async function fetchMarketContext(ticker: string): Promise<MarketContext>
   else if (atrPercent < 4) volatility = 'high';
   else volatility = 'extreme';
 
+  // Fetch enhanced signals in parallel
+  const [optionsFlow, eventsCalendar, socialSentiment] = await Promise.all([
+    fetchOptionsFlow(ticker, currentPrice),
+    fetchEventsCalendar(ticker),
+    fetchSocialSentiment(ticker, news)
+  ]);
+
   return {
     ticker: ticker.toUpperCase(),
     currentPrice,
@@ -64,7 +76,11 @@ export async function fetchMarketContext(ticker: string): Promise<MarketContext>
     recentNews: news,
     historicalPrices: historical,
     marketTrend,
-    volatility
+    volatility,
+    // Enhanced signals
+    optionsFlow,
+    eventsCalendar,
+    socialSentiment
   };
 }
 
@@ -118,12 +134,22 @@ export async function performAdversarialAnalysis(
     prediction = generatePrediction(context, sentimentVector, priceVector, bullCase, bearCase);
   }
 
-  // Calculate verdict
-  const verdict = calculateVerdict(
+  // Calculate multi-signal analysis
+  const multiSignal = calculateMultiSignalAnalysis(
+    context,
+    sentimentVector,
+    priceVector,
+    bullCase,
+    bearCase
+  );
+
+  // Calculate verdict using multi-signal if available
+  const verdict = calculateEnhancedVerdict(
     sentimentVector,
     priceVector,
     coherence,
-    context.technicals.rsi
+    context.technicals.rsi,
+    multiSignal
   );
 
   return {
@@ -144,8 +170,310 @@ export async function performAdversarialAnalysis(
     volatilityIndex: context.technicals.atr / context.currentPrice,
     trendStrength: context.technicals.adx / 100,
     verdict,
-    confidenceLevel: (coherence * 0.7) + (context.technicals.adx / 100 * 0.3)
+    confidenceLevel: multiSignal.combinedConfidence / 100,
+    // Enhanced signals
+    optionsFlow: context.optionsFlow,
+    eventsCalendar: context.eventsCalendar,
+    socialSentiment: context.socialSentiment,
+    multiSignal
   };
+}
+
+/**
+ * Calculate multi-signal analysis scores
+ */
+function calculateMultiSignalAnalysis(
+  context: MarketContext,
+  sentimentVector: number,
+  priceVector: number,
+  bullCase: CaseAnalysis,
+  bearCase: CaseAnalysis
+): MultiSignalAnalysis {
+  const { technicals, optionsFlow, eventsCalendar, socialSentiment } = context;
+
+  // Technical Score (weight: 30%)
+  const technicalScore = calculateTechnicalScore(technicals, priceVector);
+
+  // Options Flow Score (weight: 25%)
+  const optionsScore = calculateOptionsScore(optionsFlow);
+
+  // News Sentiment Score (weight: 20%)
+  const sentimentScore = calculateSentimentScore(sentimentVector, context.recentNews);
+
+  // Social Score (weight: 15%)
+  const socialScore = calculateSocialScore(socialSentiment);
+
+  // Events Score (weight: 10%)
+  const eventScore = calculateEventsScore(eventsCalendar, bullCase, bearCase);
+
+  // Calculate weighted combined score
+  const scores = [technicalScore, optionsScore, sentimentScore, socialScore, eventScore];
+  const combinedScore = scores.reduce((sum, s) => sum + (s.score * s.weight), 0);
+  const combinedConfidence = scores.reduce((sum, s) => sum + (s.confidence * s.weight), 0);
+
+  // Determine signal strength
+  let signalStrength: 'strong' | 'moderate' | 'weak' = 'weak';
+  const absScore = Math.abs(combinedScore);
+  if (absScore > 50 && combinedConfidence > 65) signalStrength = 'strong';
+  else if (absScore > 25 && combinedConfidence > 50) signalStrength = 'moderate';
+
+  return {
+    technicalScore,
+    optionsScore,
+    sentimentScore,
+    socialScore,
+    eventScore,
+    combinedScore: parseFloat(combinedScore.toFixed(1)),
+    combinedConfidence: parseFloat(combinedConfidence.toFixed(1)),
+    signalStrength
+  };
+}
+
+function calculateTechnicalScore(technicals: MarketContext['technicals'], priceVector: number): SignalScore {
+  let score = 0;
+  let confidence = 50;
+
+  // RSI scoring
+  if (technicals.rsi < 30) { score += 30; confidence += 15; }
+  else if (technicals.rsi < 40) { score += 15; }
+  else if (technicals.rsi > 70) { score -= 30; confidence += 15; }
+  else if (technicals.rsi > 60) { score -= 15; }
+
+  // MACD scoring
+  if (technicals.macdHistogram > 0) { score += 20; confidence += 5; }
+  else { score -= 20; confidence += 5; }
+
+  // Trend scoring (ADX)
+  if (technicals.adx > 25) {
+    confidence += 15;
+    score += priceVector > 0 ? 20 : -20;
+  }
+
+  // Stochastic scoring
+  if (technicals.stochK < 20) { score += 10; }
+  else if (technicals.stochK > 80) { score -= 10; }
+
+  score = Math.max(-100, Math.min(100, score));
+  confidence = Math.min(95, confidence);
+
+  return {
+    name: 'Technical',
+    score,
+    weight: 0.30,
+    confidence,
+    signal: scoreToSignal(score)
+  };
+}
+
+function calculateOptionsScore(optionsFlow?: MarketContext['optionsFlow']): SignalScore {
+  if (!optionsFlow) {
+    return { name: 'Options', score: 0, weight: 0.25, confidence: 30, signal: 'neutral' };
+  }
+
+  let score = 0;
+  let confidence = 45;
+
+  // Put/Call ratio scoring
+  if (optionsFlow.putCallRatio < 0.5) { score += 40; confidence += 15; }
+  else if (optionsFlow.putCallRatio < 0.7) { score += 25; confidence += 10; }
+  else if (optionsFlow.putCallRatio > 1.5) { score -= 40; confidence += 15; }
+  else if (optionsFlow.putCallRatio > 1.2) { score -= 25; confidence += 10; }
+
+  // Unusual activity scoring
+  const bullishUnusual = optionsFlow.unusualActivity.filter(u => u.type === 'CALL').length;
+  const bearishUnusual = optionsFlow.unusualActivity.filter(u => u.type === 'PUT').length;
+
+  if (bullishUnusual > bearishUnusual) {
+    score += (bullishUnusual - bearishUnusual) * 15;
+    confidence += 10;
+  } else if (bearishUnusual > bullishUnusual) {
+    score -= (bearishUnusual - bullishUnusual) * 15;
+    confidence += 10;
+  }
+
+  // IV percentile scoring (high IV = uncertainty)
+  if (optionsFlow.ivPercentile > 80) confidence -= 15;
+  else if (optionsFlow.ivPercentile < 30) confidence += 10;
+
+  // Sentiment override
+  if (optionsFlow.sentiment === 'bullish') score = Math.max(score, 20);
+  if (optionsFlow.sentiment === 'bearish') score = Math.min(score, -20);
+
+  score = Math.max(-100, Math.min(100, score));
+  confidence = Math.max(30, Math.min(85, confidence));
+
+  return {
+    name: 'Options',
+    score,
+    weight: 0.25,
+    confidence,
+    signal: scoreToSignal(score)
+  };
+}
+
+function calculateSentimentScore(sentimentVector: number, news: MarketContext['recentNews']): SignalScore {
+  let score = sentimentVector * 60; // Scale -1 to 1 -> -60 to 60
+  let confidence = 40;
+
+  // News volume affects confidence
+  if (news.length > 5) confidence += 15;
+  else if (news.length > 2) confidence += 8;
+
+  // Recent news has stronger signal
+  const recentNews = news.filter(n => {
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return new Date(n.timestamp).getTime() > dayAgo;
+  });
+
+  if (recentNews.length > 0) {
+    const recentSentiment = recentNews.reduce((sum, n) => sum + n.sentimentScore, 0) / recentNews.length;
+    score = (score + recentSentiment * 40) / 2;
+    confidence += 10;
+  }
+
+  score = Math.max(-100, Math.min(100, score));
+  confidence = Math.min(80, confidence);
+
+  return {
+    name: 'Sentiment',
+    score: parseFloat(score.toFixed(1)),
+    weight: 0.20,
+    confidence,
+    signal: scoreToSignal(score)
+  };
+}
+
+function calculateSocialScore(socialSentiment?: MarketContext['socialSentiment']): SignalScore {
+  if (!socialSentiment) {
+    return { name: 'Social', score: 0, weight: 0.15, confidence: 25, signal: 'neutral' };
+  }
+
+  let score = socialSentiment.overallScore * 50;
+  let confidence = 35;
+
+  // Trending score affects confidence
+  if (socialSentiment.trendingScore > 70) confidence += 15;
+  else if (socialSentiment.trendingScore > 40) confidence += 8;
+
+  // Platform agreement increases confidence
+  const platforms = socialSentiment.platforms;
+  const platformAgreement =
+    (platforms.reddit > 0 ? 1 : -1) +
+    (platforms.twitter > 0 ? 1 : -1) +
+    (platforms.stocktwits > 0 ? 1 : -1);
+
+  if (Math.abs(platformAgreement) === 3) {
+    confidence += 15;
+    score += platformAgreement > 0 ? 15 : -15;
+  }
+
+  // Sentiment change momentum
+  if (Math.abs(socialSentiment.sentimentChange24h) > 0.2) {
+    score += socialSentiment.sentimentChange24h * 30;
+    confidence += 5;
+  }
+
+  score = Math.max(-100, Math.min(100, score));
+  confidence = Math.max(25, Math.min(75, confidence));
+
+  return {
+    name: 'Social',
+    score: parseFloat(score.toFixed(1)),
+    weight: 0.15,
+    confidence,
+    signal: scoreToSignal(score)
+  };
+}
+
+function calculateEventsScore(
+  eventsCalendar?: MarketContext['eventsCalendar'],
+  bullCase?: CaseAnalysis,
+  bearCase?: CaseAnalysis
+): SignalScore {
+  if (!eventsCalendar) {
+    return { name: 'Events', score: 0, weight: 0.10, confidence: 30, signal: 'neutral' };
+  }
+
+  let score = 0;
+  let confidence = 40;
+
+  // Near-term earnings increases uncertainty
+  if (eventsCalendar.hasNearTermCatalyst) {
+    confidence -= 10; // More uncertainty around earnings
+    score = 0; // Neutral bias pre-earnings
+  }
+
+  // Recent earnings beat/miss
+  if (eventsCalendar.recentEarnings?.surprise) {
+    const surprise = eventsCalendar.recentEarnings.surprise;
+    if (surprise > 10) { score += 30; confidence += 10; }
+    else if (surprise > 0) { score += 15; }
+    else if (surprise < -10) { score -= 30; confidence += 10; }
+    else if (surprise < 0) { score -= 15; }
+  }
+
+  // Use bull/bear analysis to weight events
+  if (bullCase && bearCase) {
+    const bias = (bullCase.Score - bearCase.Score) / 100;
+    score += bias * 20;
+  }
+
+  score = Math.max(-100, Math.min(100, score));
+  confidence = Math.max(25, Math.min(70, confidence));
+
+  return {
+    name: 'Events',
+    score: parseFloat(score.toFixed(1)),
+    weight: 0.10,
+    confidence,
+    signal: scoreToSignal(score)
+  };
+}
+
+function scoreToSignal(score: number): SignalScore['signal'] {
+  if (score > 50) return 'strong_buy';
+  if (score > 20) return 'buy';
+  if (score < -50) return 'strong_sell';
+  if (score < -20) return 'sell';
+  return 'neutral';
+}
+
+/**
+ * Enhanced verdict calculation using multi-signal analysis
+ */
+function calculateEnhancedVerdict(
+  sentimentVector: number,
+  priceVector: number,
+  coherence: number,
+  rsi: number,
+  multiSignal: MultiSignalAnalysis
+): 'STRONG_BUY' | 'BUY' | 'HOLD' | 'SELL' | 'STRONG_SELL' {
+  const { combinedScore, combinedConfidence, signalStrength } = multiSignal;
+
+  // RSI extremes still matter
+  if (rsi > 85) return 'SELL';
+  if (rsi < 15) return 'BUY';
+
+  // Low confidence = HOLD
+  if (combinedConfidence < 40) return 'HOLD';
+
+  // Low coherence with weak signal = HOLD
+  if (coherence < 0.5 && signalStrength === 'weak') return 'HOLD';
+
+  // Strong signal thresholds
+  if (signalStrength === 'strong') {
+    if (combinedScore > 40) return 'STRONG_BUY';
+    if (combinedScore < -40) return 'STRONG_SELL';
+  }
+
+  // Moderate signal thresholds
+  if (combinedScore > 30) return 'BUY';
+  if (combinedScore < -30) return 'SELL';
+  if (combinedScore > 15 && combinedConfidence > 55) return 'BUY';
+  if (combinedScore < -15 && combinedConfidence > 55) return 'SELL';
+
+  // Fall back to original calculation
+  return calculateVerdict(sentimentVector, priceVector, coherence, rsi);
 }
 
 /**
